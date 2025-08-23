@@ -26,14 +26,13 @@
 #include "Kalman_filter.h"
 #include "string.h"
 #include "stdio.h"
-//#include "semphr.h"
 //
 //#include "FreeRTOS.h"
-//#include "task.h"
-//#include "timers.h"
-//#include "queue.h"
-//#include "semphr.h"
-//#include "event_groups.h"
+#include "task.h"
+#include "timers.h"
+#include "queue.h"
+#include "semphr.h"
+#include "event_groups.h"
 
 /* USER CODE END Includes */
 
@@ -123,6 +122,13 @@ char debug_buffer[150];
 
 volatile uint32_t previous_counter_value = 0;
 volatile uint32_t period_ticks = 0;
+SemaphoreHandle_t mySemaphore;
+// notification for ISR
+static TaskHandle_t xMyTaskToNotify = NULL;
+
+/* Counter to track ISR ticks */
+static uint32_t isrTickCounter = 0;
+#define ISR_TICKS_PER_TASK 1
 
 //xSemaphoreHandle sem;
 //osSemaphoreId_t xBinarySemaphore;
@@ -220,6 +226,8 @@ int main(void)
       bias_gyro_y /= (float)total_samples;
       bias_gyro_z /= (float)total_samples;
 
+
+
 //     timer_val = __HAL_TIM_GET_COUNTER(&htim4);
 
   /* USER CODE END 2 */
@@ -233,6 +241,14 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
+  mySemaphore = xSemaphoreCreateBinary();
+  if(mySemaphore == NULL)
+  {
+      // Handle error: not enough heap
+	  	  char msg[] = "Err! Ran out of Heap for semaphore\r\n";
+	  	  HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+  }
+
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -552,7 +568,7 @@ static void MX_TIM4_Init(void)
   htim4.Instance = TIM4;
   htim4.Init.Prescaler = 8000-1;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 60-1;
+  htim4.Init.Period = 120-1;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
@@ -713,12 +729,16 @@ void SensorAquisition(void *argument)
 void PID_Loop(void *argument)
 {
   /* USER CODE BEGIN PID_Loop */
+	 xMyTaskToNotify = xTaskGetCurrentTaskHandle();
   /* Infinite loop */
   for(;;)
   {
-  	  char msg[] = "Task2\r\n";
+//	  xSemaphoreTake(mySemaphore, portMAX_DELAY);
+	  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  	  char msg[] = "Semaphore taken for Task2\r\n";
   	  HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-  	osDelay(1);
+//  	osDelay(1);
+//  	processEvent();
   }
   /* USER CODE END PID_Loop */
 }
@@ -765,7 +785,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
 	  if (htim->Instance == TIM4)
 	  {
+	        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
+	        if(xMyTaskToNotify != NULL)
+	        {
+	            vTaskNotifyGiveFromISR(xMyTaskToNotify, &xHigherPriorityTaskWoken);
+	            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+	        }
 
 	  }
 
