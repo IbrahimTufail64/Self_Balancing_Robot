@@ -74,6 +74,13 @@ const osThreadAttr_t myTask02_attributes = {
   .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+/* Definitions for myTask03 */
+osThreadId_t myTask03Handle;
+const osThreadAttr_t myTask03_attributes = {
+  .name = "myTask03",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityNormal1,
+};
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -88,6 +95,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_TIM4_Init(void);
 void SensorAquisition(void *argument);
 void PID_Loop(void *argument);
+void PWM_Driver(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -128,6 +136,7 @@ static TaskHandle_t xMyTaskToNotify = NULL;
 
 //Queue handler
 QueueHandle_t queue_sensor_value;
+QueueHandle_t queue_pid_output;
 /* Counter to track ISR ticks */
 #define ISR_TICKS_PER_TASK 1
 
@@ -174,8 +183,6 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
-
-
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
@@ -191,9 +198,9 @@ int main(void)
 
 
 
-  myPID.kp = 10;
-  myPID.ki = 0.2;
-  myPID.kd = 2.2;
+  myPID.kp = 60;
+  myPID.ki = 0.01;
+  myPID.kd = 0;
   myPID.integral = 0;
   myPID.setpoint = 0;
   myPID.prev_err = 0;
@@ -259,6 +266,7 @@ int main(void)
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   queue_sensor_value = xQueueCreate(1, sizeof(uint32_t));
+  queue_pid_output = xQueueCreate(1, sizeof(uint32_t));
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -267,6 +275,9 @@ int main(void)
 
   /* creation of myTask02 */
   myTask02Handle = osThreadNew(PID_Loop, NULL, &myTask02_attributes);
+
+  /* creation of myTask03 */
+  myTask03Handle = osThreadNew(PWM_Driver, NULL, &myTask03_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -777,18 +788,61 @@ void PID_Loop(void *argument)
 
 	  	        // PID output
 	  	float output = myPID.kp * error + myPID.ki * myPID.integral + myPID.kd * derivative;
+//	  	if (fabs(error) < 1.0) output = 0;
 
-	  	char msg[70] ;
-	  	sprintf(msg,"Val:%f\r\n", output);
-	  	HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg),40);
+//	  	char msg[70] ;
+//	  	sprintf(msg,"Val:%f\r\n", output);
+//	  	HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg),40);
 
 	  	        // Save current error for next derivative calculation
 	  	myPID.prev_err = error;
+	  	// for signaling pwm queue
+	  	xQueueOverwrite(queue_pid_output, &output);
 	  	//use output in degrees to calibrate pwm
 //  	osDelay(1);
 //  	processEvent();
   }
   /* USER CODE END PID_Loop */
+}
+
+/* USER CODE BEGIN Header_PWM_Driver */
+/**
+* @brief Function implementing the myTask03 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_PWM_Driver */
+void PWM_Driver(void *argument)
+{
+  /* USER CODE BEGIN PWM_Driver */
+  /* Infinite loop */
+  for(;;)
+  {
+	  float pwm = 0;
+	  xQueueReceive(queue_pid_output, &pwm,portMAX_DELAY);
+
+
+
+	  int drive_pwm = (int)fabs(pwm);
+	  if(drive_pwm > 255) drive_pwm = 255;
+
+	  	  	if (pwm > 0) {
+	  	  	    // Reverse
+	  	  	    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, drive_pwm);
+	  	  	    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, drive_pwm);
+	  	  	    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);
+	  	  	    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);
+	  	  	} else {
+	  	  	    // Forward
+	  	  	    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, drive_pwm);
+	  	  	    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, drive_pwm);
+	  	  	    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
+	  	  	    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_4, 0);
+	  	  	}
+
+    osDelay(1);
+  }
+  /* USER CODE END PWM_Driver */
 }
 
  /* MPU Configuration */
