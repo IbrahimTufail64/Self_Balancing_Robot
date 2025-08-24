@@ -126,8 +126,9 @@ SemaphoreHandle_t mySemaphore;
 // notification for ISR
 static TaskHandle_t xMyTaskToNotify = NULL;
 
+//Queue handler
+QueueHandle_t queue_sensor_value;
 /* Counter to track ISR ticks */
-static uint32_t isrTickCounter = 0;
 #define ISR_TICKS_PER_TASK 1
 
 //xSemaphoreHandle sem;
@@ -190,13 +191,13 @@ int main(void)
 
 
 
-  myPID.kp = 60;
-  myPID.ki = 2;
+  myPID.kp = 10;
+  myPID.ki = 0.2;
   myPID.kd = 2.2;
   myPID.integral = 0;
   myPID.setpoint = 0;
   myPID.prev_err = 0;
-  myPID.interval = 0.01;
+  myPID.interval = 0.001;
 
 
 
@@ -257,6 +258,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  queue_sensor_value = xQueueCreate(1, sizeof(uint32_t));
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -568,7 +570,7 @@ static void MX_TIM4_Init(void)
   htim4.Instance = TIM4;
   htim4.Init.Prescaler = 8000-1;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 120-1;
+  htim4.Init.Period = 30-1;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
@@ -712,8 +714,30 @@ void SensorAquisition(void *argument)
   /* Infinite loop */
   for(;;)
   {
-	  	  char msg[] = "Task1!\r\n";
-	  	  HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+//	  	  char msg[] = "Task1!\r\n";
+//	  	  HAL_UART_Transmit_DMA(&huart2, (uint8_t*)msg, strlen(msg));
+
+	  		  	readings.x_acc_g = 0;
+	  		  	readings.y_acc_g = 0;
+	  		  	readings.z_acc_g = 0;
+	  		  	readings.x_gyro_degree = 0;
+	  		  	readings.y_gyro_degree = 0;
+	  		  	readings.z_gyro_degree = 0;
+	  		  	readings.x_mag = 0;
+	  		  	readings.y_mag = 0;
+	  		  	readings.z_mag = 0;
+	  		  	  get_values_MPU(&hi2c1,&readings);
+
+	  		  	readings.x_gyro_degree -= bias_gyro_x;
+	  		  	readings.y_gyro_degree -= bias_gyro_y;
+	  		  	readings.z_gyro_degree -= bias_gyro_z;
+
+
+	  		  	Complementary_filter(&readings,&pitch,&roll);
+//	  		  	char msg[50] ;
+//	  		  	sprintf(msg,"Sensor: %f\r\n", &pitch);
+//	  		  	HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg),40);
+	  		  	xQueueOverwrite(queue_sensor_value, &pitch);
     osDelay(1);
   }
   /* USER CODE END 5 */
@@ -730,13 +754,37 @@ void PID_Loop(void *argument)
 {
   /* USER CODE BEGIN PID_Loop */
 	 xMyTaskToNotify = xTaskGetCurrentTaskHandle();
+
+
   /* Infinite loop */
   for(;;)
   {
 //	  xSemaphoreTake(mySemaphore, portMAX_DELAY);
 	  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-  	  char msg[] = "Semaphore taken for Task2\r\n";
-  	  HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+//  	  char msg[] = "Semaphore taken for Task2\r\n";
+//  	  HAL_UART_Transmit_DMA(&huart2, (uint8_t*)msg, strlen(msg));
+	  static float sensor_val = 0;
+	  xQueueReceive(queue_sensor_value, &sensor_val,portMAX_DELAY);
+	   HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_4);
+	  	//PID control loop
+	  	float error = myPID.setpoint - sensor_val;
+
+	  	        // Integral term
+	  	myPID.integral += error * myPID.interval;
+
+	  	        // Derivative term
+	  	float derivative = (error - myPID.prev_err) / myPID.interval;
+
+	  	        // PID output
+	  	float output = myPID.kp * error + myPID.ki * myPID.integral + myPID.kd * derivative;
+
+	  	char msg[70] ;
+	  	sprintf(msg,"Val:%f\r\n", output);
+	  	HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg),40);
+
+	  	        // Save current error for next derivative calculation
+	  	myPID.prev_err = error;
+	  	//use output in degrees to calibrate pwm
 //  	osDelay(1);
 //  	processEvent();
   }
